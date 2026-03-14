@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Robot Vacuum Control</title>
+
+<style>
+*{box-sizing:border-box;}
+body{margin:0;font-family:Segoe UI,Roboto,Arial;background:#0b0f1a;color:white;overflow:hidden;}
+header{height:70px;display:flex;align-items:center;padding-left:30px;font-size:22px;font-weight:600;letter-spacing:1px;background:#0f1525;border-bottom:1px solid rgba(255,255,255,0.05);}
+#layout{display:flex;height:calc(100vh - 70px);}
+#sidebar{width:260px;background:#111827;border-right:1px solid rgba(255,255,255,0.05);padding:25px;display:flex;flex-direction:column;gap:20px;}
+.card{background:#1a2135;padding:18px;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,0.3);}
+.card h3{margin:0 0 10px 0;font-size:14px;opacity:0.7;}
+.status{font-size:13px;color:#5eead4;}
+button{width:100%;padding:12px;margin-top:6px;border:none;border-radius:8px;font-size:14px;cursor:pointer;background:#2563eb;color:white;transition:0.2s;}
+button:hover{background:#3b82f6;transform:scale(1.02);}
+.controls{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+.controls button{padding:10px;}
+#mapContainer{flex:1;position:relative;background:#060a15;}
+canvas{position:absolute;top:0;left:0;}
+#info{position:absolute;bottom:15px;left:20px;background:rgba(0,0,0,0.5);padding:10px 14px;border-radius:8px;font-size:12px;}
+</style>
+</head>
+
+<body>
+
+<header>
+Robot Aspirateur — Dashboard
+</header>
+
+<div id="layout">
+
+<div id="sidebar">
+
+<div class="card">
+<h3>Connexion</h3>
+<button onclick="connectRobot()">Connecter</button>
+<div class="status" id="status">Déconnecté</div>
+</div>
+
+<div class="card">
+<h3>Contrôle manuel</h3>
+
+<div class="controls">
+<div></div>
+<button onclick="sendCmd('avancer')">⬆</button>
+<div></div>
+<button onclick="sendCmd('gauche')">⬅</button>
+<button onclick="sendCmd('stop')">■</button>
+<button onclick="sendCmd('droite')">➡</button>
+<div></div>
+<button onclick="sendCmd('reculer')">⬇</button>
+<div></div>
+</div>
+
+</div>
+
+</div>
+
+<div id="mapContainer">
+<canvas id="map"></canvas>
+<div id="info">Zoom : molette • Déplacer : glisser la carte</div>
+</div>
+
+</div>
+
+<script>
+/* ===== CANVAS ===== */
+const canvas = document.getElementById("map");
+const ctx = canvas.getContext("2d");
+canvas.width = window.innerWidth - 260;
+canvas.height = window.innerHeight - 70;
+
+/* ===== ROBOT ===== */
+let robotX=0, robotY=0, robotA=0;
+let path=[];
+
+/* ===== CAMERA ===== */
+let scale=20, offsetX=canvas.width/2, offsetY=canvas.height/2;
+let dragging=false, lastX,lastY;
+
+/* ===== ZOOM ===== */
+canvas.addEventListener("wheel", e=>{
+    e.preventDefault();
+    const zoom = e.deltaY<0 ? 1.15 : 0.85;
+    const mx=e.offsetX, my=e.offsetY;
+    offsetX = mx-(mx-offsetX)*zoom;
+    offsetY = my-(my-offsetY)*zoom;
+    scale *= zoom;
+});
+
+/* ===== DRAG ===== */
+canvas.addEventListener("mousedown", e=>{
+    dragging=true; lastX=e.clientX; lastY=e.clientY;
+});
+window.addEventListener("mouseup", ()=>dragging=false);
+window.addEventListener("mousemove", e=>{
+    if(!dragging) return;
+    offsetX += e.clientX - lastX;
+    offsetY += e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+});
+
+/* ===== ROBOT SHAPE ===== */
+function drawRobot(x,y,angle){
+    const sides=12, r=12;
+    ctx.beginPath();
+    for(let i=0;i<sides;i++){
+        const a=(i/sides)*Math.PI*2 + angle;
+        const px=x+Math.cos(a)*r;
+        const py=y+Math.sin(a)*r;
+        if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+    }
+    ctx.closePath(); ctx.fillStyle="#22d3ee"; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x,y);
+    ctx.lineTo(x+25*Math.cos(angle), y+25*Math.sin(angle));
+    ctx.strokeStyle="#ef4444"; ctx.lineWidth=2; ctx.stroke();
+}
+
+/* ===== DRAW ===== */
+function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.save();
+    ctx.translate(offsetX,offsetY);
+    ctx.scale(scale/20, scale/20);
+    
+    /* GRID */
+    ctx.strokeStyle="rgba(255,255,255,0.05)";
+    for(let i=-2000;i<=2000;i+=50){
+        ctx.beginPath(); ctx.moveTo(i,-2000); ctx.lineTo(i,2000); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(-2000,i); ctx.lineTo(2000,i); ctx.stroke();
+    }
+    
+    /* PATH */
+    ctx.beginPath(); ctx.strokeStyle="#38bdf8"; ctx.lineWidth=2;
+    for(let i=0;i<path.length;i++){
+        let p=path[i];
+        if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y);
+    }
+    ctx.stroke();
+    drawRobot(robotX,-robotY,robotA*Math.PI/180);
+    ctx.restore();
+    requestAnimationFrame(draw);
+}
+draw();
+
+/* ===== WIFI (remplace Bluetooth) ===== */
+let robotIP="192.168.4.1";
+let connected=false;
+
+function connectRobot(){
+    connected=true;
+    document.getElementById("status").innerText="Connecté au robot WiFi ("+robotIP+")";
+    startDataLoop();
+}
+
+function sendCmd(cmd){
+    if(!connected) return;
+    fetch("http://"+robotIP+"/cmd?c="+cmd).catch(e=>console.log(e));
+}
+
+/* ===== DATA ===== */
+async function startDataLoop(){
+    while(connected){
+        try{
+            let r = await fetch("http://"+robotIP+"/data");
+            let value = await r.text();
+            let parts=value.split(" ");
+            parts.forEach(p=>{
+                let [k,v]=p.split(":");
+                if(k==="X") robotX=parseFloat(v);
+                if(k==="Y") robotY=parseFloat(v);
+                if(k==="A") robotA=parseFloat(v);
+            });
+            path.push({x:robotX,y:-robotY});
+        }catch(e){}
+        await new Promise(r=>setTimeout(r,200));
+    }
+}
+</script>
+
+</body>
+</html>
+
+	
